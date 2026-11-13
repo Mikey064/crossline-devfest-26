@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "Game": {
+      "title": "Game",
+      "description": "Represents a Tic-Tac-Toe match document (AI or Multiplayer). Game board state is derived by replaying the events subcollection.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Short 6-character uppercase alphanumeric join code matching the document ID.",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Match opponent mode.",
+          "enum": ["AI", "MULTIPLAYER"]
+        },
+        "aiDifficulty": {
+          "type": "string",
+          "description": "Minimax AI difficulty level or 'none' for multiplayer.",
+          "enum": ["unbeatable", "tactical", "casual", "none"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Room lifecycle state.",
+          "enum": ["WAITING", "ACTIVE", "ARCHIVED"]
+        },
+        "hostUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the match creator.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Display name of the match creator.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "hostSymbol": {
+          "type": "string",
+          "description": "Board symbol assigned to the host.",
+          "enum": ["X", "O"]
+        },
+        "guestUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the joined opponent, 'AI_BOT' for AI matches, or empty string when waiting.",
+          "maxLength": 128
+        },
+        "guestName": {
+          "type": "string",
+          "description": "Display name of the guest player or 'Minimax AI'.",
+          "maxLength": 60
+        },
+        "playerUids": {
+          "type": "array",
+          "description": "Bounded list (1 to 2) of human participant UIDs for access control and queries."
+        },
+        "eventCount": {
+          "type": "integer",
+          "description": "Monotonically increasing count of events in the events subcollection."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the match was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest match update."
+        }
+      },
+      "required": [
+        "code",
+        "mode",
+        "aiDifficulty",
+        "status",
+        "hostUid",
+        "hostName",
+        "hostSymbol",
+        "guestUid",
+        "guestName",
+        "playerUids",
+        "eventCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GameEvent": {
+      "title": "GameEvent",
+      "description": "Immutable event-sourcing record representing either a board move or a rollback to a prior turn.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "1-based sequential event index matching e_{seq}."
+        },
+        "type": {
+          "type": "string",
+          "description": "Event action type.",
+          "enum": ["MOVE", "ROLLBACK"]
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID of the authenticated user who submitted the event.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "playerUids": {
+          "type": "array",
+          "description": "Bounded list (1 to 2) of human participant UIDs matching the parent game for secure list queries."
+        },
+        "actorUid": {
+          "type": "string",
+          "description": "UID of the acting player or 'AI_BOT' for computer moves.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorName": {
+          "type": "string",
+          "description": "Display name of the acting player or 'Minimax AI'.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Mark placed on MOVE ('X' or 'O'), or empty string for ROLLBACK.",
+          "enum": ["X", "O", ""]
+        },
+        "cell": {
+          "type": "integer",
+          "description": "Board index 0..8 for MOVE, or -1 for ROLLBACK."
+        },
+        "targetTurn": {
+          "type": "integer",
+          "description": "Target turn index 0..9 for ROLLBACK, or -1 for MOVE."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the event was committed."
+        }
+      },
+      "required": [
+        "seq",
+        "type",
+        "createdByUid",
+        "playerUids",
+        "actorUid",
+        "actorName",
+        "symbol",
+        "cell",
+        "targetTurn",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/games/{gameId}": {
+      "schema": {
+        "$ref": "#/entities/Game"
+      },
+      "description": "Stores Tic-Tac-Toe match metadata and participant access control."
+    },
+    "/games/{gameId}/events/{eventId}": {
+      "schema": {
+        "$ref": "#/entities/GameEvent"
+      },
+      "description": "Append-only event log of every move and turn rollback for a match."
+    }
+  }
+}

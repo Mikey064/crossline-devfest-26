@@ -1,0 +1,221 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidGameCode(code) {
+      return code is string && code.size() == 6 && code.matches('^[A-Z0-9]{6}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidGame(data, gameId) {
+      return data.keys().hasAll([
+        'code', 'mode', 'aiDifficulty', 'status',
+        'hostUid', 'hostName', 'hostSymbol',
+        'guestUid', 'guestName', 'playerUids',
+        'eventCount', 'createdAt', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'code', 'mode', 'aiDifficulty', 'status',
+        'hostUid', 'hostName', 'hostSymbol',
+        'guestUid', 'guestName', 'playerUids',
+        'eventCount', 'createdAt', 'updatedAt'
+      ])
+      && isValidGameCode(data.code)
+      && data.code == gameId
+      && data.mode in ['AI', 'MULTIPLAYER']
+      && data.aiDifficulty in ['unbeatable', 'tactical', 'casual', 'none']
+      && (data.mode == 'AI' ? data.aiDifficulty != 'none' : data.aiDifficulty == 'none')
+      && data.status in ['WAITING', 'ACTIVE', 'ARCHIVED']
+      && isValidId(data.hostUid)
+      && data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 60
+      && data.hostSymbol in ['X', 'O']
+      && data.guestUid is string && data.guestUid.size() <= 128
+      && data.guestName is string && data.guestName.size() <= 60
+      && data.playerUids is list && data.playerUids.size() >= 1 && data.playerUids.size() <= 2
+      && data.playerUids[0] == data.hostUid
+      && (data.playerUids.size() == 1 || (isValidId(data.playerUids[1]) && data.playerUids[1] == data.guestUid))
+      && data.eventCount is int && data.eventCount >= 0 && data.eventCount <= 500
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidGameEvent(data, eventId) {
+      return data.keys().hasAll([
+        'seq', 'type', 'createdByUid', 'playerUids', 'actorUid', 'actorName',
+        'symbol', 'cell', 'targetTurn', 'createdAt'
+      ]) && data.keys().hasOnly([
+        'seq', 'type', 'createdByUid', 'playerUids', 'actorUid', 'actorName',
+        'symbol', 'cell', 'targetTurn', 'createdAt'
+      ])
+      && data.seq is int && data.seq >= 1 && data.seq <= 500
+      && eventId == 'e_' + string(data.seq)
+      && data.type in ['MOVE', 'ROLLBACK']
+      && isValidId(data.createdByUid)
+      && data.createdByUid == request.auth.uid
+      && data.playerUids is list && data.playerUids.size() >= 1 && data.playerUids.size() <= 2
+      && isValidId(data.playerUids[0])
+      && (data.playerUids.size() == 1 || isValidId(data.playerUids[1]))
+      && isValidId(data.actorUid)
+      && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 60
+      && data.symbol in ['X', 'O', '']
+      && data.cell is int && data.cell >= -1 && data.cell <= 8
+      && data.targetTurn is int && data.targetTurn >= -1 && data.targetTurn <= 9
+      && (
+        (data.type == 'MOVE' && data.symbol in ['X', 'O'] && data.cell >= 0 && data.cell <= 8 && data.targetTurn == -1) ||
+        (data.type == 'ROLLBACK' && data.symbol == '' && data.cell == -1 && data.targetTurn >= 0 && data.targetTurn <= 9)
+      )
+      && data.createdAt is timestamp
+      && data.createdAt == request.time;
+    }
+
+    // --- Collection Rules: /games/{gameId} ---
+
+    match /games/{gameId} {
+      // Single-document read: participants can always read; any verified user can fetch an open WAITING multiplayer game by exact code
+      allow get: if isSignedIn() && isValidGameCode(gameId) && (
+        resource == null ||
+        request.auth.uid in existing().playerUids ||
+        (existing().mode == 'MULTIPLAYER' && existing().status == 'WAITING' && existing().guestUid == '')
+      );
+
+      // List queries: strictly enforced to matches the authenticated user participates in
+      allow list: if isSignedIn() && request.auth.uid in existing().playerUids;
+
+      // Create: verified user creates a valid AI or WAITING Multiplayer match as host
+      allow create: if isSignedIn()
+        && isValidGameCode(gameId)
+        && isValidGame(incoming(), gameId)
+        && incoming().hostUid == request.auth.uid
+        && incoming().eventCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().playerUids.size() == 1
+        && (
+          (incoming().mode == 'AI' && incoming().status == 'ACTIVE' && incoming().guestUid == 'AI_BOT' && incoming().guestName == 'Minimax AI') ||
+          (incoming().mode == 'MULTIPLAYER' && incoming().status == 'WAITING' && incoming().guestUid == '' && incoming().guestName == '')
+        );
+
+      // Update: action-based state transitions, blocked once status is ARCHIVED
+      allow update: if isSignedIn()
+        && isValidGameCode(gameId)
+        && isValidGame(incoming(), gameId)
+        && existing().status != 'ARCHIVED'
+        && incoming().code == existing().code
+        && incoming().mode == existing().mode
+        && incoming().aiDifficulty == existing().aiDifficulty
+        && incoming().hostUid == existing().hostUid
+        && incoming().hostName == existing().hostName
+        && incoming().hostSymbol == existing().hostSymbol
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Guest joins a WAITING multiplayer match
+          (
+            existing().mode == 'MULTIPLAYER'
+            && existing().status == 'WAITING'
+            && existing().guestUid == ''
+            && existing().hostUid != request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['guestUid', 'guestName', 'playerUids', 'status', 'updatedAt'])
+            && incoming().guestUid == request.auth.uid
+            && incoming().guestName.size() >= 1
+            && incoming().playerUids.size() == 2
+            && incoming().playerUids[1] == request.auth.uid
+            && incoming().status == 'ACTIVE'
+            && incoming().eventCount == existing().eventCount
+          ) ||
+          // Action 2: Participant atomically advances eventCount alongside creating events/e_{seq}
+          (
+            existing().status == 'ACTIVE'
+            && request.auth.uid in existing().playerUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['eventCount', 'updatedAt'])
+            && incoming().eventCount == existing().eventCount + 1
+            && existsAfter(/databases/$(database)/documents/games/$(gameId)/events/$('e_' + string(incoming().eventCount)))
+          ) ||
+          // Action 3: Host or participant archives a match (terminal lock)
+          (
+            request.auth.uid in existing().playerUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && incoming().status == 'ARCHIVED'
+          )
+        );
+
+      // Matches are never deleted to preserve event-sourcing audit integrity
+      allow delete: if false;
+
+      // --- Subcollection: /games/{gameId}/events/{eventId} ---
+
+      match /events/{eventId} {
+        // Master Gate: participants of the parent game may read individual events
+        allow get: if isSignedIn() && isValidGameCode(gameId) && isValidId(eventId)
+          && exists(/databases/$(database)/documents/games/$(gameId))
+          && request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.playerUids;
+
+        // Cost-optimized list query: evaluates resource.data.playerUids directly without O(n) get() lookups
+        allow list: if isSignedIn() && request.auth.uid in existing().playerUids;
+
+        // Append-only event creation atomically synchronized with parent eventCount
+        allow create: if isSignedIn()
+          && isValidGameCode(gameId)
+          && isValidId(eventId)
+          && isValidGameEvent(incoming(), eventId)
+          && exists(/databases/$(database)/documents/games/$(gameId))
+          && get(/databases/$(database)/documents/games/$(gameId)).data.status == 'ACTIVE'
+          && request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.playerUids
+          && incoming().playerUids == get(/databases/$(database)/documents/games/$(gameId)).data.playerUids
+          && incoming().seq == get(/databases/$(database)/documents/games/$(gameId)).data.eventCount + 1
+          && getAfter(/databases/$(database)/documents/games/$(gameId)).data.eventCount == incoming().seq
+          && (
+            // Human participant move or rollback
+            (
+              incoming().actorUid == request.auth.uid
+              && (
+                incoming().type == 'ROLLBACK' ||
+                (
+                  incoming().type == 'MOVE' && (
+                    (request.auth.uid == get(/databases/$(database)/documents/games/$(gameId)).data.hostUid && incoming().symbol == get(/databases/$(database)/documents/games/$(gameId)).data.hostSymbol) ||
+                    (request.auth.uid == get(/databases/$(database)/documents/games/$(gameId)).data.guestUid && incoming().symbol != get(/databases/$(database)/documents/games/$(gameId)).data.hostSymbol)
+                  )
+                )
+              )
+            ) ||
+            // AI move recorded by host in AI mode
+            (
+              get(/databases/$(database)/documents/games/$(gameId)).data.mode == 'AI'
+              && request.auth.uid == get(/databases/$(database)/documents/games/$(gameId)).data.hostUid
+              && incoming().actorUid == 'AI_BOT'
+              && incoming().actorName == 'Minimax AI'
+              && incoming().type == 'MOVE'
+              && incoming().symbol != get(/databases/$(database)/documents/games/$(gameId)).data.hostSymbol
+            )
+          );
+
+        // Event log is strictly immutable
+        allow update, delete: if false;
+      }
+    }
+  }
+}

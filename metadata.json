@@ -1,0 +1,6 @@
+{
+  "name": "Crossline",
+  "description": "Event-sourced Tic-Tac-Toe with Google Sign-In, Minimax AI, and real-time multiplayer via Firestore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
